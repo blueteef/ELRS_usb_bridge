@@ -130,9 +130,10 @@ void runDiagMode() {
 }
 
 // Trigger a restart into diagnostic mode via RTC flag.
+// Cut RX power immediately before restarting so it never lingers.
 void enterDiagMode() {
-    Serial.println("Entering diagnostic mode...");
-    Serial.flush();
+    Serial1.end();
+    digitalWrite(MOSFET_PIN, LOW);
     bootToDiag = 1;
     esp_restart();
 }

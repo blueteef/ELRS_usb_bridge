@@ -58,6 +58,7 @@ bfs::SbusData sbusData;
 
 // --- Timeouts ---
 #define IDLE_TIMEOUT_MS     (5UL * 60UL * 1000UL)  // 5 min idle -> sleep
+#define DIAG_HOLD_MS        3000                    // hold duration for manual sleep
 
 // SBUS units from center (992) to count as stick activity.
 #define ACTIVITY_THRESHOLD  50
@@ -152,14 +153,16 @@ void loop() {
     bool newFrame = false;
     bool failsafe = false;
 
-    // --- Button: press while awake -> sleep immediately ---
-    static bool buttonWasHigh = true;
+    // --- Button: long press (3s) while awake -> sleep/RX off ---
+    static unsigned long buttonHeldSince = 0;
+    static bool buttonTracked = false;
     bool buttonLow = (digitalRead(WAKE_PIN) == LOW);
-    if (buttonLow && buttonWasHigh) {
-        delay(20);  // debounce
-        if (digitalRead(WAKE_PIN) == LOW) goToSleep();
+    if (buttonLow) {
+        if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+        else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) goToSleep();
+    } else {
+        buttonTracked = false;
     }
-    buttonWasHigh = !buttonLow;
 
     switch (currentState) {
 
@@ -174,7 +177,10 @@ void loop() {
                     Serial.println("Locked: SBUS Inverted");
                     break;
                 }
-                if (digitalRead(WAKE_PIN) == LOW) { delay(20); if (digitalRead(WAKE_PIN) == LOW) goToSleep(); }
+                if (digitalRead(WAKE_PIN) == LOW) {
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) goToSleep();
+                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_INV) {
@@ -194,7 +200,10 @@ void loop() {
                     Serial.println("Locked: SBUS TTL");
                     break;
                 }
-                if (digitalRead(WAKE_PIN) == LOW) { delay(20); if (digitalRead(WAKE_PIN) == LOW) goToSleep(); }
+                if (digitalRead(WAKE_PIN) == LOW) {
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) goToSleep();
+                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_TTL) {

@@ -156,16 +156,29 @@ void loop() {
     // --- Button: long press (3s) -> kill RX power, stay running ---
     static unsigned long buttonHeldSince = 0;
     static bool buttonTracked = false;
+    static unsigned long lastButtonPrint = 0;
     bool buttonLow = (digitalRead(WAKE_PIN) == LOW);
     if (buttonLow) {
-        if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-        else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
-            Serial1.end();
-            digitalWrite(MOSFET_PIN, LOW);
-            currentState = SCAN_INV;
-            buttonTracked = false;  // prevent re-trigger while still held
+        if (!buttonTracked) {
+            buttonHeldSince = millis();
+            buttonTracked = true;
+            Serial.println("DBG: button DOWN");
+        } else {
+            unsigned long held = millis() - buttonHeldSince;
+            if (millis() - lastButtonPrint > 250) {
+                Serial.print("DBG: held ms="); Serial.println(held);
+                lastButtonPrint = millis();
+            }
+            if (held >= DIAG_HOLD_MS) {
+                Serial.println("DBG: threshold reached, cutting MOSFET");
+                Serial1.end();
+                digitalWrite(MOSFET_PIN, LOW);
+                currentState = SCAN_INV;
+                buttonTracked = false;
+            }
         }
     } else {
+        if (buttonTracked) Serial.println("DBG: button UP");
         buttonTracked = false;
     }
 
@@ -183,12 +196,13 @@ void loop() {
                     break;
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; Serial.println("DBG: button DOWN (scan)"); }
                     else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+                        Serial.println("DBG: threshold reached (scan), cutting MOSFET");
                         Serial1.end(); digitalWrite(MOSFET_PIN, LOW);
                         currentState = SCAN_INV; buttonTracked = false;
                     }
-                } else { buttonTracked = false; }
+                } else { if (buttonTracked) Serial.println("DBG: button UP (scan)"); buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_INV) {
@@ -209,12 +223,13 @@ void loop() {
                     break;
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; Serial.println("DBG: button DOWN (scan)"); }
                     else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+                        Serial.println("DBG: threshold reached (scan), cutting MOSFET");
                         Serial1.end(); digitalWrite(MOSFET_PIN, LOW);
                         currentState = SCAN_INV; buttonTracked = false;
                     }
-                } else { buttonTracked = false; }
+                } else { if (buttonTracked) Serial.println("DBG: button UP (scan)"); buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_TTL) {

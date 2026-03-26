@@ -18,15 +18,16 @@
  * SBUS ch[8-15] -> buttons 1-8 (high = pressed)
  *
  * LED (GPIO 2, WS2812):
+ *   Blue (breathing)   : RX powered off (manual or idle sleep)
  *   Amber (slow blink) : scanning for signal
  *   Amber (solid)      : signal locked, BLE not connected
  *   Green              : signal + BLE connected, normal operation
  *   Red                : failsafe active
- *   Off                : sleeping
+ *   Off                : sleeping (light sleep)
  *
  * Button behaviour:
- *   Press (awake)   : RX off, enter light sleep
- *   Press (sleeping): RX on, resume scanning
+ *   Hold 3s (awake)  : RX off, device stays running
+ *   Short press      : wake from idle sleep, RX on, resume scanning
  *
  * Power management:
  *   After IDLE_TIMEOUT_MS of no stick/button activity, the MOSFET
@@ -54,16 +55,17 @@ bfs::SbusData sbusData;
 
 // --- Power control ---
 #define MOSFET_PIN  5   // Gate of 2N7000; HIGH = RX on
-#define WAKE_PIN    4   // Switch to GND; wakes from sleep / triggers diag mode
+#define WAKE_PIN    4   // Switch to GND; wakes from sleep / long-press cuts RX
 
 // --- Timeouts ---
 #define IDLE_TIMEOUT_MS     (5UL * 60UL * 1000UL)  // 5 min idle -> sleep
-#define DIAG_HOLD_MS        3000                    // hold duration for manual sleep
+#define DIAG_HOLD_MS        3000                    // hold duration to cut RX
 
 // SBUS units from center (992) to count as stick activity.
 #define ACTIVITY_THRESHOLD  50
 
 static unsigned long lastActivity = 0;
+static bool rxPowered = true;   // tracks MOSFET state for LED
 
 // --- BLE Gamepad ---
 BleGamepad bleGamepad("RC Joystick", "ESP32-C3", 100);
@@ -104,10 +106,11 @@ void goToSleep() {
 
     Serial1.end();
     setLED(0, 0, 0);
+    rxPowered = false;
     digitalWrite(MOSFET_PIN, LOW);
 
-    // Wait for button release before sleeping, otherwise LOW_LEVEL wakeup
-    // fires immediately and we wake right back up.
+    // Wait for button release before sleeping — LOW_LEVEL wakeup fires
+    // immediately if the pin is already held low.
     while (digitalRead(WAKE_PIN) == LOW) delay(10);
     delay(50);
 
@@ -116,6 +119,7 @@ void goToSleep() {
     esp_light_sleep_start();         // returns on next switch press
 
     Serial.println("Wake switch pressed - RX on, scanning.");
+    rxPowered = true;
     digitalWrite(MOSFET_PIN, HIGH);
     currentState    = SCAN_INV;
     lastValidSignal = millis();
@@ -125,6 +129,7 @@ void goToSleep() {
 void setup() {
     pinMode(MOSFET_PIN, OUTPUT);
     digitalWrite(MOSFET_PIN, HIGH);
+    rxPowered = true;
     pinMode(WAKE_PIN, INPUT_PULLUP);
 
     Serial.begin(115200);
@@ -156,29 +161,20 @@ void loop() {
     // --- Button: long press (3s) -> kill RX power, stay running ---
     static unsigned long buttonHeldSince = 0;
     static bool buttonTracked = false;
-    static unsigned long lastButtonPrint = 0;
     bool buttonLow = (digitalRead(WAKE_PIN) == LOW);
     if (buttonLow) {
         if (!buttonTracked) {
             buttonHeldSince = millis();
             buttonTracked = true;
-            Serial.println("DBG: button DOWN");
-        } else {
-            unsigned long held = millis() - buttonHeldSince;
-            if (millis() - lastButtonPrint > 250) {
-                Serial.print("DBG: held ms="); Serial.println(held);
-                lastButtonPrint = millis();
-            }
-            if (held >= DIAG_HOLD_MS) {
-                Serial.println("DBG: threshold reached, cutting MOSFET");
-                Serial1.end();
-                digitalWrite(MOSFET_PIN, LOW);
-                currentState = SCAN_INV;
-                buttonTracked = false;
-            }
+        } else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+            Serial.println("Button hold: cutting RX power.");
+            Serial1.end();
+            rxPowered = false;
+            digitalWrite(MOSFET_PIN, LOW);
+            currentState = SCAN_INV;
+            buttonTracked = false;  // prevent re-trigger while still held
         }
     } else {
-        if (buttonTracked) Serial.println("DBG: button UP");
         buttonTracked = false;
     }
 
@@ -196,13 +192,13 @@ void loop() {
                     break;
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; Serial.println("DBG: button DOWN (scan)"); }
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
                     else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
-                        Serial.println("DBG: threshold reached (scan), cutting MOSFET");
-                        Serial1.end(); digitalWrite(MOSFET_PIN, LOW);
+                        Serial.println("Button hold: cutting RX power.");
+                        Serial1.end(); rxPowered = false; digitalWrite(MOSFET_PIN, LOW);
                         currentState = SCAN_INV; buttonTracked = false;
                     }
-                } else { if (buttonTracked) Serial.println("DBG: button UP (scan)"); buttonTracked = false; }
+                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_INV) {
@@ -223,13 +219,13 @@ void loop() {
                     break;
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; Serial.println("DBG: button DOWN (scan)"); }
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
                     else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
-                        Serial.println("DBG: threshold reached (scan), cutting MOSFET");
-                        Serial1.end(); digitalWrite(MOSFET_PIN, LOW);
+                        Serial.println("Button hold: cutting RX power.");
+                        Serial1.end(); rxPowered = false; digitalWrite(MOSFET_PIN, LOW);
                         currentState = SCAN_INV; buttonTracked = false;
                     }
-                } else { if (buttonTracked) Serial.println("DBG: button UP (scan)"); buttonTracked = false; }
+                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_TTL) {
@@ -293,19 +289,27 @@ void loop() {
     }
 
     // --- LED status ---
-    bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
-    if (scanning) {
-        if ((millis() / 500) % 2)
-            setLED(200, 100, 0);   // amber blink: scanning
-        else
-            setLED(0, 0, 0);
+    if (!rxPowered) {
+        // Breathing blue: 2-second triangle wave
+        unsigned long t = millis() % 2000;
+        uint8_t blue = (t < 1000) ? (uint8_t)(t * 255 / 1000)
+                                   : (uint8_t)((2000 - t) * 255 / 1000);
+        setLED(0, 0, blue);
     } else {
-        if (failsafe)
-            setLED(255, 0, 0);             // red:   failsafe
-        else if (!bleGamepad.isConnected())
-            setLED(200, 100, 0);           // amber: signal ok, BLE not connected
-        else
-            setLED(0, 200, 0);             // green: all good
+        bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
+        if (scanning) {
+            if ((millis() / 500) % 2)
+                setLED(200, 100, 0);   // amber blink: scanning
+            else
+                setLED(0, 0, 0);
+        } else {
+            if (failsafe)
+                setLED(255, 0, 0);             // red:   failsafe
+            else if (!bleGamepad.isConnected())
+                setLED(200, 100, 0);           // amber: signal ok, BLE not connected
+            else
+                setLED(0, 200, 0);             // green: all good
+        }
     }
 
     // --- Idle / sleep check ---

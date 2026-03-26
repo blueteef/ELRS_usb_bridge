@@ -1,10 +1,10 @@
 /* ============================================================
- * SBUS -> USB HID Gamepad Bridge
+ * SBUS -> BLE HID Gamepad Bridge
  * ESP32-C3 Super Mini (Tenstar Robot)
  * ============================================================
  * RC receiver SBUS out -> GPIO 3
  * Auto-senses inverted (standard) or TTL (non-inverted) SBUS.
- * Outputs as a USB HID gamepad (composite USB: HID + CDC serial).
+ * Outputs 8 axes + 8 buttons as a BLE HID gamepad.
  *
  * Wiring:
  *   Receiver SBUS  -> GPIO 3
@@ -14,44 +14,36 @@
  *   Wake switch    -> GPIO 4  (other leg to GND; active LOW)
  *   WS2812 DIN     -> GPIO 2
  *
- * Axis mapping (USB HID has 6 axes):
- *   ch[0] -> X    ch[1] -> Y    ch[2] -> Z
- *   ch[3] -> Rz   ch[4] -> Rx   ch[5] -> Ry
- *   ch[6] -> Button 9  (high/low threshold)
- *   ch[7] -> Button 10 (high/low threshold)
- * Button mapping:
- *   ch[8-15] -> Buttons 1-8
+ * SBUS ch[0-7]  -> axes  (X, Y, Z, Rz, Rx, Ry, Slider1, Slider2)
+ * SBUS ch[8-15] -> buttons 1-8 (high = pressed)
  *
  * LED (GPIO 2, WS2812):
  *   Amber (slow blink) : scanning for signal
- *   Amber (solid)      : signal locked, USB not yet enumerated
- *   Green              : signal + USB ready, normal operation
+ *   Amber (solid)      : signal locked, BLE not connected
+ *   Green              : signal + BLE connected, normal operation
  *   Red                : failsafe active
  *   Off                : sleeping
- *   Orange (slow blink): diagnostic / upload mode
+ *   Orange (slow blink): diagnostic mode
  *
  * Button behaviour:
  *   Short press (sleeping)  : wake, RX on, resume scanning
  *   Long press (3s, awake)  : enter diagnostic mode (RX off,
- *                             HID stopped, USB serial active).
+ *                             BLE stopped, USB serial active).
  *                             Press RST to return to normal.
  *
  * Power management:
  *   After IDLE_TIMEOUT_MS of no stick/button activity, the MOSFET
- *   cuts power to the RX and the ESP32 enters light sleep. USB
- *   stays enumerated. Press the wake switch to resume.
+ *   cuts power to the RX and the ESP32 enters light sleep. BLE
+ *   stays alive. Press the wake switch to resume.
  * ============================================================ */
 
 #include <Arduino.h>
-#include <USB.h>
-#include <USBHIDGamepad.h>
+#include <HWCDC.h>
 #include <Adafruit_NeoPixel.h>
 #include "sbus.h"
+#include <BleGamepad.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
-
-// --- USB HID Gamepad ---
-USBHIDGamepad gamepad;
 
 // --- External WS2812 LED ---
 #define RGB_PIN  2
@@ -68,7 +60,7 @@ bfs::SbusData sbusData;
 #define WAKE_PIN    4   // Switch to GND; wakes from sleep / triggers diag mode
 
 // --- Timeouts ---
-#define IDLE_TIMEOUT_MS     (5UL * 60UL * 1000UL)  // 5 min idle → sleep
+#define IDLE_TIMEOUT_MS     (5UL * 60UL * 1000UL)  // 5 min idle -> sleep
 #define DIAG_HOLD_MS        3000                    // hold duration for diag mode
 
 // SBUS units from center (992) to count as stick activity.
@@ -79,16 +71,20 @@ RTC_DATA_ATTR static uint8_t bootToDiag = 0;
 
 static unsigned long lastActivity = 0;
 
+// --- BLE Gamepad ---
+BleGamepad bleGamepad("RC Joystick", "ESP32-C3", 100);
+BleGamepadConfiguration bleGamepadConfig;
+
 // --- State machine ---
 enum State { SCAN_INV, SCAN_TTL, ACTIVE_INV, ACTIVE_TTL };
 State currentState = SCAN_INV;
 unsigned long lastValidSignal = 0;
 unsigned long stateTimer = 0;
 
-// Map SBUS value (172-1811) to int8_t axis (-128 to 127).
-inline int8_t sbusToAxis(uint16_t val) {
+// Map SBUS value (172-1811) to signed 16-bit axis (-32768 to 32767).
+inline int16_t sbusToAxis(uint16_t val) {
     val = constrain(val, 172, 1811);
-    return (int8_t)map((long)val, 172, 1811, -128, 127);
+    return (int16_t)map((long)val, 172, 1811, -32768, 32767);
 }
 
 void setLED(uint8_t r, uint8_t g, uint8_t b) {
@@ -107,7 +103,7 @@ bool isChannelActive(const bfs::SbusData &d) {
     return false;
 }
 
-// Diagnostic mode: RX off, HID idle, USB serial active.
+// Diagnostic mode: RX off, BLE stopped, USB serial active.
 // Slow orange blink. Exit by pressing RST.
 void runDiagMode() {
     pinMode(MOSFET_PIN, OUTPUT);
@@ -121,8 +117,8 @@ void runDiagMode() {
     rgb.begin();
     rgb.setBrightness(60);
 
-    Serial.println("=== DIAGNOSTIC / UPLOAD MODE ===");
-    Serial.println("HID not started. RX off. USB serial active.");
+    Serial.println("=== DIAGNOSTIC MODE ===");
+    Serial.println("BLE not started. RX off. USB serial active.");
     Serial.println("Press RST to return to normal operation.");
 
     while (true) {
@@ -144,7 +140,7 @@ void enterDiagMode() {
 // Cut RX power and enter light sleep. Returns only when the wake
 // switch is pressed; execution continues as if nothing happened.
 void goToSleep() {
-    Serial.println("Idle — cutting RX power, entering light sleep.");
+    Serial.println("Idle - cutting RX power, entering light sleep.");
     Serial.flush();
 
     Serial1.end();
@@ -159,7 +155,7 @@ void goToSleep() {
     while (digitalRead(WAKE_PIN) == LOW) delay(10);
     delay(50);
 
-    Serial.println("Wake switch pressed — RX on, scanning.");
+    Serial.println("Wake switch pressed - RX on, scanning.");
     digitalWrite(MOSFET_PIN, HIGH);
     currentState    = SCAN_INV;
     lastValidSignal = millis();
@@ -179,15 +175,20 @@ void setup() {
     Serial.begin(115200);
     unsigned long t0 = millis();
     while (!Serial && millis() - t0 < 3000) delay(10);
-    Serial.println("SBUS USB HID Bridge starting...");
+    Serial.println("SBUS BLE Bridge starting...");
 
     rgb.begin();
     rgb.setBrightness(60);
     rgb.clear();
     rgb.show();
 
-    gamepad.begin();
-    USB.begin();
+    bleGamepadConfig.setAutoReport(false);
+    bleGamepadConfig.setControllerType(CONTROLLER_TYPE_GAMEPAD);
+    bleGamepadConfig.setButtonCount(8);
+    bleGamepadConfig.setWhichAxes(true, true, true, true, true, true, true, true);
+    bleGamepadConfig.setAxesMax(32767);
+    bleGamepadConfig.setAxesMin(-32768);
+    bleGamepad.begin(&bleGamepadConfig);
 
     lastActivity = millis();
     stateTimer   = millis();
@@ -284,45 +285,41 @@ void loop() {
             break;
     }
 
-    // --- USB HID output ---
-    if (newFrame && !failsafe && gamepad.ready()) {
-        hid_gamepad_report_t report = {0};
-        report.x  = sbusToAxis(sbusData.ch[0]);
-        report.y  = sbusToAxis(sbusData.ch[1]);
-        report.z  = sbusToAxis(sbusData.ch[2]);
-        report.rz = sbusToAxis(sbusData.ch[3]);
-        report.rx = sbusToAxis(sbusData.ch[4]);
-        report.ry = sbusToAxis(sbusData.ch[5]);
-
-        // ch[6-7] as buttons 9-10; ch[8-15] as buttons 1-8
-        uint32_t buttons = 0;
+    // --- BLE output ---
+    if (newFrame && !failsafe && bleGamepad.isConnected()) {
+        bleGamepad.setAxes(
+            sbusToAxis(sbusData.ch[0]),
+            sbusToAxis(sbusData.ch[1]),
+            sbusToAxis(sbusData.ch[2]),
+            sbusToAxis(sbusData.ch[3]),
+            sbusToAxis(sbusData.ch[4]),
+            sbusToAxis(sbusData.ch[5]),
+            sbusToAxis(sbusData.ch[6]),
+            sbusToAxis(sbusData.ch[7])
+        );
         for (int b = 0; b < 8; b++) {
-            if (sbusData.ch[b + 8] > 1000) buttons |= (1u << b);
+            if (sbusData.ch[b + 8] > 1000)
+                bleGamepad.press(b + 1);
+            else
+                bleGamepad.release(b + 1);
         }
-        if (sbusData.ch[6] > 1000) buttons |= (1u << 8);
-        if (sbusData.ch[7] > 1000) buttons |= (1u << 9);
-        report.buttons = buttons;
-
-        gamepad.sendReport(&report);
+        bleGamepad.sendReport();
     }
 
     // --- LED status ---
-    // All LED logic in one place; called every loop iteration.
     bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
     if (scanning) {
-        // Amber slow blink: looking for signal
         if ((millis() / 500) % 2)
-            setLED(200, 100, 0);
+            setLED(200, 100, 0);   // amber blink: scanning
         else
             setLED(0, 0, 0);
     } else {
-        // Active state
         if (failsafe)
-            setLED(255, 0, 0);       // red:   failsafe
-        else if (!gamepad.ready())
-            setLED(200, 100, 0);     // amber: signal ok, USB not ready
+            setLED(255, 0, 0);             // red:   failsafe
+        else if (!bleGamepad.isConnected())
+            setLED(200, 100, 0);           // amber: signal ok, BLE not connected
         else
-            setLED(0, 200, 0);       // green: all good
+            setLED(0, 200, 0);             // green: all good
     }
 
     // --- Idle / sleep check ---

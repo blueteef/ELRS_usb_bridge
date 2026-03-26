@@ -101,19 +101,19 @@ bool isChannelActive(const bfs::SbusData &d) {
 // switch is pressed; execution continues as if nothing happened.
 void goToSleep() {
     Serial.println("Idle - cutting RX power, entering light sleep.");
-    Serial.flush();
 
     Serial1.end();
     setLED(0, 0, 0);
     digitalWrite(MOSFET_PIN, LOW);
 
-    gpio_wakeup_enable((gpio_num_t)WAKE_PIN, GPIO_INTR_LOW_LEVEL);
-    esp_sleep_enable_gpio_wakeup();
-    esp_light_sleep_start();         // returns on switch press
-
-    // Wait for button release (software debounce).
+    // Wait for button release before sleeping, otherwise LOW_LEVEL wakeup
+    // fires immediately and we wake right back up.
     while (digitalRead(WAKE_PIN) == LOW) delay(10);
     delay(50);
+
+    gpio_wakeup_enable((gpio_num_t)WAKE_PIN, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+    esp_light_sleep_start();         // returns on next switch press
 
     Serial.println("Wake switch pressed - RX on, scanning.");
     digitalWrite(MOSFET_PIN, HIGH);
@@ -153,13 +153,18 @@ void loop() {
     bool newFrame = false;
     bool failsafe = false;
 
-    // --- Button: long press (3s) while awake -> sleep/RX off ---
+    // --- Button: long press (3s) -> kill RX power, stay running ---
     static unsigned long buttonHeldSince = 0;
     static bool buttonTracked = false;
     bool buttonLow = (digitalRead(WAKE_PIN) == LOW);
     if (buttonLow) {
         if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-        else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) goToSleep();
+        else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+            Serial1.end();
+            digitalWrite(MOSFET_PIN, LOW);
+            currentState = SCAN_INV;
+            buttonTracked = false;  // prevent re-trigger while still held
+        }
     } else {
         buttonTracked = false;
     }
@@ -179,7 +184,10 @@ void loop() {
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
                     if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) goToSleep();
+                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+                        Serial1.end(); digitalWrite(MOSFET_PIN, LOW);
+                        currentState = SCAN_INV; buttonTracked = false;
+                    }
                 } else { buttonTracked = false; }
                 delay(5);
             }
@@ -202,7 +210,10 @@ void loop() {
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
                     if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) goToSleep();
+                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+                        Serial1.end(); digitalWrite(MOSFET_PIN, LOW);
+                        currentState = SCAN_INV; buttonTracked = false;
+                    }
                 } else { buttonTracked = false; }
                 delay(5);
             }

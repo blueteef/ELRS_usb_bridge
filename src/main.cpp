@@ -64,8 +64,9 @@ bfs::SbusData sbusData;
 // SBUS units from center (992) to count as stick activity.
 #define ACTIVITY_THRESHOLD  50
 
-static unsigned long lastActivity = 0;
-static bool rxPowered = true;   // tracks MOSFET state for LED
+static unsigned long lastActivity  = 0;
+static bool          rxPowered     = true;   // tracks MOSFET state for LED
+static unsigned long wakeGraceEnd  = 0;      // long-press blocked until this time
 
 // --- BLE Gamepad ---
 BleGamepad bleGamepad("RC Joystick", "ESP32-C3", 100);
@@ -122,6 +123,10 @@ void goToSleep() {
     while (digitalRead(WAKE_PIN) == LOW) delay(10);
     delay(50);
 
+    // Grace period: ignore long-press for 1.5s so the wake press doesn't
+    // immediately re-trigger an RX cut.
+    wakeGraceEnd = millis() + 1500;
+
     Serial.println("Wake switch pressed - RX on, scanning.");
     rxPowered = true;
     digitalWrite(MOSFET_PIN, HIGH);
@@ -170,7 +175,8 @@ void loop() {
         if (!buttonTracked) {
             buttonHeldSince = millis();
             buttonTracked = true;
-        } else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+        } else if (millis() > wakeGraceEnd &&
+                   millis() - buttonHeldSince >= DIAG_HOLD_MS) {
             Serial.println("Button hold: cutting RX power.");
             Serial1.end();
             rxPowered = false;
@@ -184,18 +190,24 @@ void loop() {
 
     // Skip scanning entirely while RX is off — keeps the breathing smooth.
     if (!rxPowered) {
-        unsigned long t = millis() % 4000;
-        uint8_t blue = 0;
-        if (t < 1500) {
-            uint32_t p = t;
-            blue = (uint8_t)(p * p * 127 / 2250000UL);        // ease in
-        } else if (t < 3000) {
-            uint32_t p = 3000 - t;
-            blue = (uint8_t)(p * p * 127 / 2250000UL);        // ease out
+        // 8-second cycle: 3.5s ease-in, 3.5s ease-out, 1s dwell at min.
+        // Brightness range: ~5% (13) to ~75% (220), quadratic curve.
+        const uint8_t  B_MIN = 13;
+        const uint8_t  B_MAX = 220;
+        const uint8_t  B_RNG = B_MAX - B_MIN;   // 207
+        unsigned long  t     = millis() % 8000;
+        uint8_t blue;
+        if (t < 3500) {
+            uint32_t p = (uint32_t)t * 1000 / 3500;           // 0-1000
+            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
+        } else if (t < 7000) {
+            uint32_t p = (uint32_t)(7000 - t) * 1000 / 3500;  // 1000-0
+            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
+        } else {
+            blue = B_MIN;  // 1s dwell at minimum
         }
-        // t 3000-4000: off (1s dwell at bottom)
         setLED(0, 0, blue);
-        delay(16);   // ~60Hz update, no need to spin flat out
+        delay(20);
         return;
     }
 
@@ -214,7 +226,8 @@ void loop() {
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
                     if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+                    else if (millis() > wakeGraceEnd &&
+                             millis() - buttonHeldSince >= DIAG_HOLD_MS) {
                         Serial.println("Button hold: cutting RX power.");
                         Serial1.end(); rxPowered = false; digitalWrite(MOSFET_PIN, LOW);
                         currentState = SCAN_INV; buttonTracked = false;
@@ -241,7 +254,8 @@ void loop() {
                 }
                 if (digitalRead(WAKE_PIN) == LOW) {
                     if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+                    else if (millis() > wakeGraceEnd &&
+                             millis() - buttonHeldSince >= DIAG_HOLD_MS) {
                         Serial.println("Button hold: cutting RX power.");
                         Serial1.end(); rxPowered = false; digitalWrite(MOSFET_PIN, LOW);
                         currentState = SCAN_INV; buttonTracked = false;

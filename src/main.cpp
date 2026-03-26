@@ -172,51 +172,38 @@ void loop() {
     bool newFrame = false;
     bool failsafe = false;
 
-    // --- Button: long press (3s) -> kill RX power, stay running ---
+    // --- Button ---
+    // RX on:  long press (3s) cuts RX power
+    // RX off: any short press (on release) restores RX power
     static unsigned long buttonHeldSince = 0;
     static bool buttonTracked = false;
     bool buttonLow = (digitalRead(WAKE_PIN) == LOW);
     if (buttonLow) {
-        if (!buttonTracked) {
-            buttonHeldSince = millis();
-            buttonTracked = true;
-        } else if (millis() > wakeGraceEnd &&
-                   millis() - buttonHeldSince >= DIAG_HOLD_MS) {
+        if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+        else if (rxPowered && millis() > wakeGraceEnd &&
+                 millis() - buttonHeldSince >= DIAG_HOLD_MS) {
             Serial.println("Button hold: cutting RX power.");
             Serial1.end();
             rxPowered = false;
             digitalWrite(MOSFET_PIN, LOW);
             currentState = SCAN_INV;
-            buttonTracked = false;  // prevent re-trigger while still held
+            buttonTracked = false;
         }
     } else {
+        if (buttonTracked && !rxPowered) {
+            // Released while RX was off — restore power
+            rxPowered = true;
+            digitalWrite(MOSFET_PIN, HIGH);
+            currentState = SCAN_INV;
+            lastActivity = millis();
+            Serial.println("Button press: RX power restored.");
+        }
         buttonTracked = false;
     }
 
-    // Skip scanning entirely while RX is off — keeps the breathing smooth.
-    if (!rxPowered) {
-        // 8-second cycle: 3.5s ease-in, 3.5s ease-out, 1s dwell at min.
-        // Brightness range: ~5% (13) to ~75% (220), quadratic curve.
-        const uint8_t  B_MIN = 13;
-        const uint8_t  B_MAX = 220;
-        const uint8_t  B_RNG = B_MAX - B_MIN;   // 207
-        unsigned long  t     = millis() % 8000;
-        uint8_t blue;
-        if (t < 3500) {
-            uint32_t p = (uint32_t)t * 1000 / 3500;           // 0-1000
-            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
-        } else if (t < 7000) {
-            uint32_t p = (uint32_t)(7000 - t) * 1000 / 3500;  // 1000-0
-            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
-        } else {
-            blue = B_MIN;  // 1s dwell at minimum
-        }
-        setLED(0, 0, blue);
-        delay(20);
-        return;
-    }
-
-    switch (currentState) {
+    // --- State machine (skipped while RX is off) ---
+    if (rxPowered) {
+        switch (currentState) {
 
         case SCAN_INV:
             sbus_inv.Begin();
@@ -229,15 +216,6 @@ void loop() {
                     Serial.println("Locked: SBUS Inverted");
                     break;
                 }
-                if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() > wakeGraceEnd &&
-                             millis() - buttonHeldSince >= DIAG_HOLD_MS) {
-                        Serial.println("Button hold: cutting RX power.");
-                        Serial1.end(); rxPowered = false; digitalWrite(MOSFET_PIN, LOW);
-                        currentState = SCAN_INV; buttonTracked = false;
-                    }
-                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_INV) {
@@ -257,15 +235,6 @@ void loop() {
                     Serial.println("Locked: SBUS TTL");
                     break;
                 }
-                if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() > wakeGraceEnd &&
-                             millis() - buttonHeldSince >= DIAG_HOLD_MS) {
-                        Serial.println("Button hold: cutting RX power.");
-                        Serial1.end(); rxPowered = false; digitalWrite(MOSFET_PIN, LOW);
-                        currentState = SCAN_INV; buttonTracked = false;
-                    }
-                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_TTL) {
@@ -305,6 +274,9 @@ void loop() {
                 currentState = SCAN_INV;
             }
             break;
+        } // end switch
+    } else {
+        delay(20);  // pace loop while RX is off
     }
 
     // --- BLE output ---
@@ -328,20 +300,37 @@ void loop() {
         bleGamepad.sendReport();
     }
 
-    // --- LED status (rxPowered is always true here; off case handled above) ---
-    bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
-    if (scanning) {
-        if ((millis() / 500) % 2)
-            setLED(200, 100, 0);   // amber blink: scanning
-        else
-            setLED(0, 0, 0);
+    // --- LED status ---
+    if (!rxPowered) {
+        // Breathing blue: 8s cycle, quadratic ease, 5%→75%
+        const uint8_t B_MIN = 13, B_MAX = 220, B_RNG = B_MAX - B_MIN;
+        unsigned long t = millis() % 8000;
+        uint8_t blue;
+        if (t < 3500) {
+            uint32_t p = (uint32_t)t * 1000 / 3500;
+            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
+        } else if (t < 7000) {
+            uint32_t p = (uint32_t)(7000 - t) * 1000 / 3500;
+            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
+        } else {
+            blue = B_MIN;
+        }
+        setLED(0, 0, blue);
     } else {
-        if (failsafe)
-            setLED(255, 0, 0);             // red:   failsafe
-        else if (!bleGamepad.isConnected())
-            setLED(200, 100, 0);           // amber: signal ok, BLE not connected
-        else
-            setLED(0, 200, 0);             // green: all good
+        bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
+        if (scanning) {
+            if ((millis() / 500) % 2)
+                setLED(200, 100, 0);   // amber blink: scanning
+            else
+                setLED(0, 0, 0);
+        } else {
+            if (failsafe)
+                setLED(255, 0, 0);             // red:   failsafe
+            else if (!bleGamepad.isConnected())
+                setLED(200, 100, 0);           // amber: signal ok, BLE not connected
+            else
+                setLED(0, 200, 0);             // green: all good
+        }
     }
 
     // --- Idle / sleep check ---

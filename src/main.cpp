@@ -225,6 +225,10 @@ void loop() {
                     Serial.println("Locked: SBUS Inverted");
                     break;
                 }
+                if (digitalRead(WAKE_PIN) == LOW) {
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) enterDiagMode();
+                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_INV) {
@@ -244,6 +248,10 @@ void loop() {
                     Serial.println("Locked: SBUS TTL");
                     break;
                 }
+                if (digitalRead(WAKE_PIN) == LOW) {
+                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
+                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) enterDiagMode();
+                } else { buttonTracked = false; }
                 delay(5);
             }
             if (currentState != ACTIVE_TTL) {

@@ -115,6 +115,11 @@ void goToSleep() {
     while (digitalRead(WAKE_PIN) == LOW) delay(10);
     delay(50);
 
+    // Explicitly hold the pullup active during sleep — Arduino's INPUT_PULLUP
+    // only sets it for normal operation; without this the pin can float LOW,
+    // causing an immediate spurious wakeup and watchdog reset.
+    gpio_sleep_set_pull_mode((gpio_num_t)WAKE_PIN, GPIO_PULLUP_ONLY);
+
     gpio_wakeup_enable((gpio_num_t)WAKE_PIN, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
     esp_light_sleep_start();         // returns on next switch press

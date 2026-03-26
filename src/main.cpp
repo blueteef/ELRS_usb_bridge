@@ -23,13 +23,10 @@
  *   Green              : signal + BLE connected, normal operation
  *   Red                : failsafe active
  *   Off                : sleeping
- *   Orange (slow blink): diagnostic mode
  *
  * Button behaviour:
- *   Short press (sleeping)  : wake, RX on, resume scanning
- *   Long press (3s, awake)  : enter diagnostic mode (RX off,
- *                             BLE stopped, USB serial active).
- *                             Press RST to return to normal.
+ *   Press (awake)   : RX off, enter light sleep
+ *   Press (sleeping): RX on, resume scanning
  *
  * Power management:
  *   After IDLE_TIMEOUT_MS of no stick/button activity, the MOSFET
@@ -61,13 +58,9 @@ bfs::SbusData sbusData;
 
 // --- Timeouts ---
 #define IDLE_TIMEOUT_MS     (5UL * 60UL * 1000UL)  // 5 min idle -> sleep
-#define DIAG_HOLD_MS        3000                    // hold duration for diag mode
 
 // SBUS units from center (992) to count as stick activity.
 #define ACTIVITY_THRESHOLD  50
-
-// --- RTC memory: survives software reset, cleared on power cycle ---
-RTC_DATA_ATTR static uint8_t bootToDiag = 0;
 
 static unsigned long lastActivity = 0;
 
@@ -103,41 +96,6 @@ bool isChannelActive(const bfs::SbusData &d) {
     return false;
 }
 
-// Diagnostic mode: RX off, BLE stopped, USB serial active.
-// Slow orange blink. Exit by pressing RST.
-void runDiagMode() {
-    pinMode(MOSFET_PIN, OUTPUT);
-    digitalWrite(MOSFET_PIN, LOW);
-    pinMode(WAKE_PIN, INPUT_PULLUP);
-
-    Serial.begin(115200);
-    unsigned long t0 = millis();
-    while (!Serial && millis() - t0 < 3000) delay(10);
-
-    rgb.begin();
-    rgb.setBrightness(217);
-
-    Serial.println("=== DIAGNOSTIC MODE ===");
-    Serial.println("BLE not started. RX off. USB serial active.");
-    Serial.println("Press RST to return to normal operation.");
-
-    while (true) {
-        setLED(255, 80, 0);
-        delay(600);
-        setLED(0, 0, 0);
-        delay(400);
-    }
-}
-
-// Trigger a restart into diagnostic mode via RTC flag.
-// Cut RX power immediately before restarting so it never lingers.
-void enterDiagMode() {
-    Serial1.end();
-    digitalWrite(MOSFET_PIN, LOW);
-    bootToDiag = 1;
-    esp_restart();
-}
-
 // Cut RX power and enter light sleep. Returns only when the wake
 // switch is pressed; execution continues as if nothing happened.
 void goToSleep() {
@@ -164,11 +122,6 @@ void goToSleep() {
 }
 
 void setup() {
-    if (bootToDiag) {
-        bootToDiag = 0;
-        runDiagMode();   // never returns
-    }
-
     pinMode(MOSFET_PIN, OUTPUT);
     digitalWrite(MOSFET_PIN, HIGH);
     pinMode(WAKE_PIN, INPUT_PULLUP);
@@ -199,19 +152,14 @@ void loop() {
     bool newFrame = false;
     bool failsafe = false;
 
-    // --- Long-press detection (diag mode trigger) ---
-    static unsigned long buttonHeldSince = 0;
-    static bool buttonTracked = false;
-    if (digitalRead(WAKE_PIN) == LOW) {
-        if (!buttonTracked) {
-            buttonHeldSince = millis();
-            buttonTracked   = true;
-        } else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) {
-            enterDiagMode();
-        }
-    } else {
-        buttonTracked = false;
+    // --- Button: press while awake -> sleep immediately ---
+    static bool buttonWasHigh = true;
+    bool buttonLow = (digitalRead(WAKE_PIN) == LOW);
+    if (buttonLow && buttonWasHigh) {
+        delay(20);  // debounce
+        if (digitalRead(WAKE_PIN) == LOW) goToSleep();
     }
+    buttonWasHigh = !buttonLow;
 
     switch (currentState) {
 
@@ -226,10 +174,7 @@ void loop() {
                     Serial.println("Locked: SBUS Inverted");
                     break;
                 }
-                if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) enterDiagMode();
-                } else { buttonTracked = false; }
+                if (digitalRead(WAKE_PIN) == LOW) { delay(20); if (digitalRead(WAKE_PIN) == LOW) goToSleep(); }
                 delay(5);
             }
             if (currentState != ACTIVE_INV) {
@@ -249,10 +194,7 @@ void loop() {
                     Serial.println("Locked: SBUS TTL");
                     break;
                 }
-                if (digitalRead(WAKE_PIN) == LOW) {
-                    if (!buttonTracked) { buttonHeldSince = millis(); buttonTracked = true; }
-                    else if (millis() - buttonHeldSince >= DIAG_HOLD_MS) enterDiagMode();
-                } else { buttonTracked = false; }
+                if (digitalRead(WAKE_PIN) == LOW) { delay(20); if (digitalRead(WAKE_PIN) == LOW) goToSleep(); }
                 delay(5);
             }
             if (currentState != ACTIVE_TTL) {

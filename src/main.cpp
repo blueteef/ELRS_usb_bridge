@@ -118,6 +118,10 @@ void goToSleep() {
     esp_sleep_enable_gpio_wakeup();
     esp_light_sleep_start();         // returns on next switch press
 
+    // Debounce after wake before re-enabling button tracking.
+    while (digitalRead(WAKE_PIN) == LOW) delay(10);
+    delay(50);
+
     Serial.println("Wake switch pressed - RX on, scanning.");
     rxPowered = true;
     digitalWrite(MOSFET_PIN, HIGH);
@@ -176,6 +180,23 @@ void loop() {
         }
     } else {
         buttonTracked = false;
+    }
+
+    // Skip scanning entirely while RX is off — keeps the breathing smooth.
+    if (!rxPowered) {
+        unsigned long t = millis() % 4000;
+        uint8_t blue = 0;
+        if (t < 1500) {
+            uint32_t p = t;
+            blue = (uint8_t)(p * p * 127 / 2250000UL);        // ease in
+        } else if (t < 3000) {
+            uint32_t p = 3000 - t;
+            blue = (uint8_t)(p * p * 127 / 2250000UL);        // ease out
+        }
+        // t 3000-4000: off (1s dwell at bottom)
+        setLED(0, 0, blue);
+        delay(16);   // ~60Hz update, no need to spin flat out
+        return;
     }
 
     switch (currentState) {
@@ -288,28 +309,20 @@ void loop() {
         bleGamepad.sendReport();
     }
 
-    // --- LED status ---
-    if (!rxPowered) {
-        // Breathing blue: 2-second triangle wave
-        unsigned long t = millis() % 2000;
-        uint8_t blue = (t < 1000) ? (uint8_t)(t * 255 / 1000)
-                                   : (uint8_t)((2000 - t) * 255 / 1000);
-        setLED(0, 0, blue);
+    // --- LED status (rxPowered is always true here; off case handled above) ---
+    bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
+    if (scanning) {
+        if ((millis() / 500) % 2)
+            setLED(200, 100, 0);   // amber blink: scanning
+        else
+            setLED(0, 0, 0);
     } else {
-        bool scanning = (currentState == SCAN_INV || currentState == SCAN_TTL);
-        if (scanning) {
-            if ((millis() / 500) % 2)
-                setLED(200, 100, 0);   // amber blink: scanning
-            else
-                setLED(0, 0, 0);
-        } else {
-            if (failsafe)
-                setLED(255, 0, 0);             // red:   failsafe
-            else if (!bleGamepad.isConnected())
-                setLED(200, 100, 0);           // amber: signal ok, BLE not connected
-            else
-                setLED(0, 200, 0);             // green: all good
-        }
+        if (failsafe)
+            setLED(255, 0, 0);             // red:   failsafe
+        else if (!bleGamepad.isConnected())
+            setLED(200, 100, 0);           // amber: signal ok, BLE not connected
+        else
+            setLED(0, 200, 0);             // green: all good
     }
 
     // --- Idle / sleep check ---

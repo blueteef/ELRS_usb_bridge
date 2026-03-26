@@ -115,7 +115,7 @@ void runDiagMode() {
     while (!Serial && millis() - t0 < 3000) delay(10);
 
     rgb.begin();
-    rgb.setBrightness(60);
+    rgb.setBrightness(217);
 
     Serial.println("=== DIAGNOSTIC MODE ===");
     Serial.println("BLE not started. RX off. USB serial active.");
@@ -178,7 +178,7 @@ void setup() {
     Serial.println("SBUS BLE Bridge starting...");
 
     rgb.begin();
-    rgb.setBrightness(60);
+    rgb.setBrightness(217);
     rgb.clear();
     rgb.show();
 

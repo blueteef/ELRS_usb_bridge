@@ -172,13 +172,15 @@ void loop() {
         btnDown       = true;
         cutThisPress  = false;
     } else if (pressed && btnDown) {
-        // Held: check for long-press cut
-        if (rxState == RX_ON &&
+        // Held: check for long-press cut (guard with !cutThisPress so it
+        // only fires once — btnDown stays true so we don't re-detect a
+        // falling edge while the button is still held)
+        if (!cutThisPress &&
+            rxState == RX_ON &&
             millis() > wakeGraceEnd &&
             millis() - btnHeldSince >= HOLD_CUT_MS) {
             cutRX();
             cutThisPress = true;
-            btnDown      = false;   // reset so hold doesn't re-trigger
         }
     } else if (!pressed && btnDown) {
         // Rising edge (release)

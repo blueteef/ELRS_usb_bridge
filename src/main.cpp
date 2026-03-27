@@ -68,6 +68,7 @@ SbusState sbusState = SCAN_INV;
 unsigned long lastActivity    = 0;
 unsigned long lastValidSig    = 0;
 unsigned long wakeGraceEnd    = 0;   // long-press blocked after wake
+unsigned long rxOffSince      = 0;   // set when RX is cut, cleared on restore
 
 // ---- LED phase ----
 enum LedPhase { LED_BOOT, LED_RESTORE, LED_NORMAL };
@@ -105,9 +106,10 @@ bool isActive(const bfs::SbusData &d) {
 void cutRX() {
     Serial1.end();
     digitalWrite(PIN_MOSFET, LOW);
-    rxState   = RX_OFF;
-    sbusState = SCAN_INV;
-    ledPhase  = LED_NORMAL;
+    rxState    = RX_OFF;
+    sbusState  = SCAN_INV;
+    ledPhase   = LED_NORMAL;
+    rxOffSince = millis();
 }
 
 void restoreRX() {
@@ -116,7 +118,8 @@ void restoreRX() {
     sbusState     = SCAN_INV;
     lastActivity  = millis();
     lastValidSig  = millis();
-    ledPhase      = LED_NORMAL;   // scanning sweep starts immediately
+    ledPhase      = LED_NORMAL;
+    rxOffSince    = 0;
 }
 
 // ---- Sleep ----
@@ -395,8 +398,13 @@ void loop() {
 
     // ============================================================
     // IDLE / SLEEP
+    // Stage 1: 5min SBUS inactivity -> cut RX (breathing blue starts)
+    // Stage 2: 5min after RX cut    -> sleep (breathing blue was running)
     // ============================================================
-    if (millis() - lastActivity > IDLE_MS) {
+    if (rxState == RX_ON && millis() - lastActivity > IDLE_MS) {
+        cutRX();
+    }
+    if (rxState == RX_OFF && rxOffSince > 0 && millis() - rxOffSince > IDLE_MS) {
         enterSleep();
     }
 }

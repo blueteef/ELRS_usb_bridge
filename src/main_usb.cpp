@@ -305,39 +305,42 @@ void loop() {
     // LED
     // ============================================================
     if (ledPhase == LED_BOOT) {
-        // RGB cycle on boot, 1s per colour, 3s total
+        // Fast RGB scanner (60ms/colour) -> white flash -> normal
         unsigned long t = millis() - ledPhaseStart;
         if (t >= 3000) {
             ledPhase = LED_NORMAL;
-        } else if (t < 1000) {
-            setLED(200, 0, 0);
-        } else if (t < 2000) {
-            setLED(0, 200, 0);
+        } else if (t >= 2700) {
+            setLED(200, 200, 200);
         } else {
-            setLED(0, 0, 200);
+            uint8_t c = (t / 60) % 3;
+            if      (c == 0) setLED(220, 0,   0);
+            else if (c == 1) setLED(0,   220, 0);
+            else             setLED(0,   0,   220);
         }
     } else if (ledPhase == LED_RESTORE) {
-        // Flash red fast 500ms -> RGB boot cycle 3s -> normal
+        // White glitch strobe -> fast RGB scan -> white flash -> normal
         unsigned long t = millis() - ledPhaseStart;
-        if (t < 500) {
-            bool on = (millis() / 50) % 2;
-            setLED(on ? 255 : 0, 0, 0);
-        } else if (t < 1500) {
-            setLED(200, 0, 0);
-        } else if (t < 2500) {
-            setLED(0, 200, 0);
-        } else if (t < 3500) {
-            setLED(0, 0, 200);
+        if (t < 400) {
+            bool on = (millis() / 40) % 2;
+            setLED(on ? 220 : 0, on ? 220 : 0, on ? 220 : 0);
+        } else if (t < 2000) {
+            uint8_t c = ((t - 400) / 60) % 3;
+            if      (c == 0) setLED(220, 0,   0);
+            else if (c == 1) setLED(0,   220, 0);
+            else             setLED(0,   0,   220);
+        } else if (t < 2200) {
+            setLED(200, 200, 200);
         } else {
             ledPhase = LED_NORMAL;
         }
     } else {
         // LED_NORMAL: derived from state
         if (btnDown && rxState == RX_ON) {
-            // Button held: red flashing, intensity builds over HOLD_CUT_MS
-            unsigned long held = millis() - btnHeldSince;
-            uint8_t intensity  = (uint8_t)min((unsigned long)255, held * 255UL / HOLD_CUT_MS);
-            bool on = (millis() / 100) % 2;
+            // Building urgency: intensity and strobe rate both ramp
+            unsigned long held   = millis() - btnHeldSince;
+            uint8_t intensity    = (uint8_t)min((unsigned long)255, held * 255UL / HOLD_CUT_MS);
+            unsigned long period = max(60UL, 400UL - (340UL * held / HOLD_CUT_MS));
+            bool on = (millis() % period) < (period / 2);
             setLED(on ? intensity : 0, 0, 0);
         } else if (rxState == RX_OFF) {
             // Breathing blue: 8s cycle, quadratic ease-in/out, 5%->75%
@@ -359,12 +362,18 @@ void loop() {
             // RX on
             bool scanning = (sbusState == SCAN_INV || sbusState == SCAN_TTL);
             if (scanning) {
-                bool on = (millis() / 500) % 2;
-                setLED(0, on ? 200 : 0, 0);
+                // Double radar blip: two 80ms pulses, 1.2s cycle
+                unsigned long t = millis() % 1200;
+                bool on = (t < 80) || (t >= 140 && t < 220);
+                setLED(0, on ? 220 : 0, 0);
             } else if (failsafe) {
                 setLED(255, 0, 0);
             } else {
-                setLED(0, 200, 0);
+                // Slow green throb: 150-220 brightness, 2s cycle
+                unsigned long t = millis() % 2000;
+                uint32_t p = (t < 1000) ? t : (2000 - t);
+                uint8_t g = 150 + (uint8_t)(p * 70 / 1000);
+                setLED(0, g, 0);
             }
         }
     }

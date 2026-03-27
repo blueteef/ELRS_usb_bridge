@@ -80,6 +80,17 @@ void setLED(uint8_t r, uint8_t g, uint8_t b) {
     led.show();
 }
 
+// Called inside SBUS scan loops to keep sweep smooth despite 600ms blocking
+void updateScanLED() {
+    if (ledPhase != LED_NORMAL) return;
+    unsigned long t = millis() % 2000;
+    uint8_t g;
+    if      (t < 300)  g = (uint8_t)(t * 220 / 300);
+    else if (t < 1000) g = (uint8_t)((1000 - t) * 220 / 700);
+    else               g = 0;
+    setLED(0, g, 0);
+}
+
 inline int16_t sbusToAxis(uint16_t v) {
     return (int16_t)map((long)constrain(v, 172, 1811), 172, 1811, -32768, 32767);
 }
@@ -219,6 +230,7 @@ void loop() {
                     lastValidSig  = lastActivity = millis();
                     break;
                 }
+                updateScanLED();
                 delay(5);
             }
             if (sbusState != ACTIVE_INV) { Serial1.end(); sbusState = SCAN_TTL; }
@@ -236,6 +248,7 @@ void loop() {
                     lastValidSig  = lastActivity = millis();
                     break;
                 }
+                updateScanLED();
                 delay(5);
             }
             if (sbusState != ACTIVE_TTL) { Serial1.end(); sbusState = SCAN_INV; }
@@ -361,11 +374,21 @@ void loop() {
             } else if (failsafe) {
                 setLED(255, 0, 0);
             } else {
-                // Slow green throb: 150-220 brightness, 2s cycle
-                unsigned long t = millis() % 2000;
-                uint32_t p = (t < 1000) ? t : (2000 - t);
-                uint8_t g = 150 + (uint8_t)(p * 70 / 1000);
-                setLED(0, g, 0);
+                // Breathing green: mirrors breathing blue (quadratic ease, 8s cycle)
+                const uint8_t G_MIN = 13, G_MAX = 220, G_RNG = G_MAX - G_MIN;
+                unsigned long t = millis() % 8000;
+                uint8_t green;
+                if (t < 3500) {
+                    uint32_t p = (uint32_t)t * 1000 / 3500;
+                    green = G_MIN + (uint8_t)((uint32_t)p * p * G_RNG / 1000000UL);
+                } else if (t < 7000) {
+                    uint32_t p = (uint32_t)(7000 - t) * 1000 / 3500;
+                    green = G_MIN + (uint8_t)((uint32_t)p * p * G_RNG / 1000000UL);
+                } else {
+                    green = G_MIN;
+                }
+                setLED(0, green, 0);
+                delay(20);
             }
         }
     }

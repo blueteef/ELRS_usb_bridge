@@ -105,8 +105,7 @@ void restoreRX() {
     sbusState     = SCAN_INV;
     lastActivity  = millis();
     lastValidSig  = millis();
-    ledPhase      = LED_RESTORE;
-    ledPhaseStart = millis();
+    ledPhase      = LED_NORMAL;   // scanning sweep starts immediately
 }
 
 // ---- Sleep ----
@@ -214,8 +213,10 @@ void loop() {
             unsigned long t0 = millis();
             while (millis() - t0 < SCAN_WIN_MS) {
                 if (sbus_inv.Read()) {
-                    sbusState    = ACTIVE_INV;
-                    lastValidSig = lastActivity = millis();
+                    sbusState     = ACTIVE_INV;
+                    ledPhase      = LED_RESTORE;
+                    ledPhaseStart = millis();
+                    lastValidSig  = lastActivity = millis();
                     break;
                 }
                 delay(5);
@@ -229,8 +230,10 @@ void loop() {
             unsigned long t0 = millis();
             while (millis() - t0 < SCAN_WIN_MS) {
                 if (sbus_ttl.Read()) {
-                    sbusState    = ACTIVE_TTL;
-                    lastValidSig = lastActivity = millis();
+                    sbusState     = ACTIVE_TTL;
+                    ledPhase      = LED_RESTORE;
+                    ledPhaseStart = millis();
+                    lastValidSig  = lastActivity = millis();
                     break;
                 }
                 delay(5);
@@ -345,10 +348,13 @@ void loop() {
             // RX on
             bool scanning = (sbusState == SCAN_INV || sbusState == SCAN_TTL);
             if (scanning) {
-                // Double radar blip: two 80ms pulses, 1.2s cycle
-                unsigned long t = millis() % 1200;
-                bool on = (t < 80) || (t >= 140 && t < 220);
-                setLED(0, on ? 220 : 0, 0);
+                // Radar sweep: fast ramp in, slow fade out, 2s cycle
+                unsigned long t = millis() % 2000;
+                uint8_t g;
+                if      (t < 300)  g = (uint8_t)(t * 220 / 300);
+                else if (t < 1000) g = (uint8_t)((1000 - t) * 220 / 700);
+                else               g = 0;
+                setLED(0, g, 0);
             } else if (failsafe) {
                 setLED(255, 0, 0);
             } else {

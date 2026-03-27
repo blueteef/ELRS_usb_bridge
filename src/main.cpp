@@ -69,6 +69,11 @@ unsigned long lastActivity    = 0;
 unsigned long lastValidSig    = 0;
 unsigned long wakeGraceEnd    = 0;   // long-press blocked after wake
 
+// ---- LED phase ----
+enum LedPhase { LED_BOOT, LED_RESTORE, LED_NORMAL };
+LedPhase      ledPhase      = LED_BOOT;
+unsigned long ledPhaseStart  = 0;
+
 // ---- Helpers ----
 void setLED(uint8_t r, uint8_t g, uint8_t b) {
     led.setPixelColor(0, led.Color(r, g, b));
@@ -91,6 +96,7 @@ void cutRX() {
     digitalWrite(PIN_MOSFET, LOW);
     rxState   = RX_OFF;
     sbusState = SCAN_INV;
+    ledPhase  = LED_NORMAL;
 }
 
 void restoreRX() {
@@ -99,6 +105,8 @@ void restoreRX() {
     sbusState     = SCAN_INV;
     lastActivity  = millis();
     lastValidSig  = millis();
+    ledPhase      = LED_RESTORE;
+    ledPhaseStart = millis();
 }
 
 // ---- Sleep ----
@@ -146,8 +154,9 @@ void setup() {
     bleCfg.setAxesMin(-32768);
     ble.begin(&bleCfg);
 
-    lastActivity = millis();
-    lastValidSig = millis();
+    lastActivity  = millis();
+    lastValidSig  = millis();
+    ledPhaseStart = millis();
 }
 
 // ---- Main loop ----
@@ -276,35 +285,70 @@ void loop() {
     }
 
     // ============================================================
-    // LED  (derived purely from state)
+    // LED
     // ============================================================
-    if (rxState == RX_OFF) {
-        // Breathing blue: 8s cycle, quadratic ease-in/out, 5%->75%
-        const uint8_t B_MIN = 13, B_MAX = 220, B_RNG = B_MAX - B_MIN;
-        unsigned long t = millis() % 8000;
-        uint8_t blue;
-        if (t < 3500) {
-            uint32_t p = (uint32_t)t * 1000 / 3500;
-            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
-        } else if (t < 7000) {
-            uint32_t p = (uint32_t)(7000 - t) * 1000 / 3500;
-            blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
-        } else {
-            blue = B_MIN;
-        }
-        setLED(0, 0, blue);
-        delay(20);
-    } else {
-        bool scanning = (sbusState == SCAN_INV || sbusState == SCAN_TTL);
-        if (scanning) {
-            bool blink = (millis() / 500) % 2;
-            setLED(blink ? 200 : 0, blink ? 100 : 0, 0);
-        } else if (failsafe) {
-            setLED(255, 0, 0);
-        } else if (!ble.isConnected()) {
-            setLED(200, 100, 0);
-        } else {
+    if (ledPhase == LED_BOOT) {
+        // RGB cycle on boot, 1s per colour, 3s total
+        unsigned long t = millis() - ledPhaseStart;
+        if (t >= 3000) {
+            ledPhase = LED_NORMAL;
+        } else if (t < 1000) {
+            setLED(200, 0, 0);
+        } else if (t < 2000) {
             setLED(0, 200, 0);
+        } else {
+            setLED(0, 0, 200);
+        }
+    } else if (ledPhase == LED_RESTORE) {
+        // Flash red fast 500ms -> RGB boot cycle 3s -> normal
+        unsigned long t = millis() - ledPhaseStart;
+        if (t < 500) {
+            bool on = (millis() / 50) % 2;
+            setLED(on ? 255 : 0, 0, 0);
+        } else if (t < 1500) {
+            setLED(200, 0, 0);
+        } else if (t < 2500) {
+            setLED(0, 200, 0);
+        } else if (t < 3500) {
+            setLED(0, 0, 200);
+        } else {
+            ledPhase = LED_NORMAL;
+        }
+    } else {
+        // LED_NORMAL: derived from state
+        if (btnDown && rxState == RX_ON) {
+            // Button held: red flashing, intensity builds over HOLD_CUT_MS
+            unsigned long held = millis() - btnHeldSince;
+            uint8_t intensity  = (uint8_t)min((unsigned long)255, held * 255UL / HOLD_CUT_MS);
+            bool on = (millis() / 100) % 2;
+            setLED(on ? intensity : 0, 0, 0);
+        } else if (rxState == RX_OFF) {
+            // Breathing blue: 8s cycle, quadratic ease-in/out, 5%->75%
+            const uint8_t B_MIN = 13, B_MAX = 220, B_RNG = B_MAX - B_MIN;
+            unsigned long t = millis() % 8000;
+            uint8_t blue;
+            if (t < 3500) {
+                uint32_t p = (uint32_t)t * 1000 / 3500;
+                blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
+            } else if (t < 7000) {
+                uint32_t p = (uint32_t)(7000 - t) * 1000 / 3500;
+                blue = B_MIN + (uint8_t)((uint32_t)p * p * B_RNG / 1000000UL);
+            } else {
+                blue = B_MIN;
+            }
+            setLED(0, 0, blue);
+            delay(20);
+        } else {
+            // RX on
+            bool scanning = (sbusState == SCAN_INV || sbusState == SCAN_TTL);
+            if (scanning) {
+                bool on = (millis() / 500) % 2;
+                setLED(0, on ? 200 : 0, 0);
+            } else if (failsafe) {
+                setLED(255, 0, 0);
+            } else {
+                setLED(0, 200, 0);
+            }
         }
     }
 

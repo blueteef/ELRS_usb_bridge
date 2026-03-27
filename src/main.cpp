@@ -291,31 +291,34 @@ void loop() {
     // LED
     // ============================================================
     if (ledPhase == LED_BOOT) {
-        // Fast RGB scanner (60ms/colour) -> white flash -> normal
+        // Smooth hue sweep -> white flash -> normal
         unsigned long t = millis() - ledPhaseStart;
         if (t >= 3000) {
             ledPhase = LED_NORMAL;
         } else if (t >= 2700) {
-            setLED(200, 200, 200);
+            setLED(220, 220, 220);
         } else {
-            uint8_t c = (t / 60) % 3;
-            if      (c == 0) setLED(220, 0,   0);
-            else if (c == 1) setLED(0,   220, 0);
-            else             setLED(0,   0,   220);
+            uint16_t hue = (uint16_t)((uint32_t)t * 65535UL / 2700);
+            led.setPixelColor(0, led.gamma32(led.ColorHSV(hue, 255, 220)));
+            led.show();
         }
     } else if (ledPhase == LED_RESTORE) {
-        // White glitch strobe -> fast RGB scan -> white flash -> normal
+        // Smooth white pulse -> hue sweep -> fade to green -> normal
         unsigned long t = millis() - ledPhaseStart;
-        if (t < 400) {
-            bool on = (millis() / 40) % 2;
-            setLED(on ? 220 : 0, on ? 220 : 0, on ? 220 : 0);
-        } else if (t < 2000) {
-            uint8_t c = ((t - 400) / 60) % 3;
-            if      (c == 0) setLED(220, 0,   0);
-            else if (c == 1) setLED(0,   220, 0);
-            else             setLED(0,   0,   220);
+        if (t < 300) {
+            uint8_t w = (uint8_t)(t * 220 / 300);
+            setLED(w, w, w);
+        } else if (t < 600) {
+            uint8_t w = (uint8_t)((600 - t) * 220 / 300);
+            setLED(w, w, w);
         } else if (t < 2200) {
-            setLED(200, 200, 200);
+            uint16_t hue = (uint16_t)(((uint32_t)(t - 600)) * 65535UL / 1600);
+            led.setPixelColor(0, led.gamma32(led.ColorHSV(hue, 255, 220)));
+            led.show();
+        } else if (t < 2500) {
+            // Fade into green so throb entry is seamless
+            uint8_t g = (uint8_t)((t - 2200) * 150 / 300);
+            setLED(0, g, 0);
         } else {
             ledPhase = LED_NORMAL;
         }
